@@ -1,5 +1,5 @@
 #pragma once
 #include "src/cli/config.h"
 
-int start_repl(Config &cfg);
+// Entry point for daemon mode
 int start_daemon(Config &cfg);

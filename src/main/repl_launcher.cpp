@@ -1,115 +1,93 @@
 #include "src/main/repl_launcher.h"
 #include "src/utils/logger.h"
+#include "src/engine/engine.h"
 
-
+#include <atomic>
 #include <csignal>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <fcntl.h>
-#include <fstream>
 #include <iostream>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <condition_variable>
 
+static std::atomic<bool> g_terminate{false};
+static std::mutex g_mtx;
+static std::condition_variable g_cv;
 
-static volatile std::sig_atomic_t g_terminate = 0;
-
-
+// signal handler sets atomic flag and notifies
 static void signal_handler(int sig) {
-if (sig == SIGTERM || sig == SIGINT) g_terminate = 1;
+    if (sig == SIGINT || sig == SIGTERM) {
+        g_terminate.store(true);
+        g_cv.notify_all();
+    }
 }
-
 
 int start_repl(Config &cfg) {
-log(LogLevel::INFO, "Starting REPL mode (foreground)");
-std::signal(SIGINT, signal_handler);
-std::signal(SIGTERM, signal_handler);
+    log(LogLevel::INFO, "Starting REPL mode (foreground)");
 
+    // Setup signals (store previous handlers if needed)
+    std::signal(SIGINT, signal_handler);
+    std::signal(SIGTERM, signal_handler);
 
-std::string line;
-while (!g_terminate) {
-std::cout << "boltd> " << std::flush;
-if (!std::getline(std::cin, line)) break;
-if (line == ":quit" || line == ":exit") break;
-if (line == ":help") {
-std::cout << "Commands: :help :quit :backup :stats" << std::endl;
-continue;
-}
-if (line.empty()) continue;
-std::cout << "(not implemented) received: " << line << std::endl;
-}
-log(LogLevel::INFO, "REPL exiting");
-return 0;
-}
+    // Construct engine
+    Engine engine(cfg);
+    std::string err;
+    if (!engine.init(err)) {
+        log(LogLevel::ERROR, std::string("Engine init failed: ") + err);
+        return 1;
+    }
+    engine.start_background();
 
-static bool write_pidfile(const std::string &path, pid_t pid, std::string &err) {
-std::ofstream ofs(path, std::ofstream::trunc);
-if (!ofs) { err = "failed to open pidfile for writing: " + path; return false; }
-ofs << pid << "\n";
-if (!ofs) { err = "failed to write pidfile"; return false; }
-return true;
-}
+    // REPL worker runs on its own thread (keeps main responsive to signals)
+    std::atomic<bool> repl_done{false};
+    std::thread repl_thread([&]{
+        log(LogLevel::INFO, "REPL thread started");
+        std::string line;
+        while (!g_terminate.load(std::memory_order_relaxed)) {
+            std::cout << "boltd> " << std::flush;
+            if (!std::getline(std::cin, line)) {
+                // EOF (Ctrl+D)
+                log(LogLevel::INFO, "REPL EOF received");
+                break;
+            }
+            // trim leading/trailing
+            auto l = line.find_first_not_of(" \t\r\n");
+            if (l == std::string::npos) continue;
+            auto r = line.find_last_not_of(" \t\r\n");
+            std::string cmd = line.substr(l, r - l + 1);
 
+            if (cmd == "exit" || cmd == "quit" || cmd == ":quit" || cmd == ":exit") {
+                log(LogLevel::INFO, "Exit command received from REPL");
+                g_terminate.store(true);
+                break;
+            }
+            if (cmd == ":help") {
+                std::cout << "Commands: :help :quit :backup :stats | exit | quit\n";
+                continue;
+            }
 
-int start_daemon(Config &cfg) {
-log(LogLevel::INFO, "Starting daemon mode");
+            // dispatch to engine
+            std::string out = engine.execute_sql(cmd);
+            if (!out.empty()) std::cout << out << std::endl;
+        }
+        repl_done.store(true);
+        g_cv.notify_all();
+        log(LogLevel::INFO, "REPL thread exiting");
+    });
 
+    // main thread waits for termination signal
+    {
+        std::unique_lock<std::mutex> lk(g_mtx);
+        g_cv.wait(lk, [&]{ return g_terminate.load() || repl_done.load(); });
+    }
 
-pid_t pid = fork();
-if (pid < 0) {
-log(LogLevel::ERROR, "fork failed");
-return 1;
-}
-if (pid > 0) {
-log(LogLevel::INFO, "daemon forked, parent exiting");
-return 0;
-}
-if (setsid() < 0) {
-log(LogLevel::ERROR, "setsid failed");
-return 1;
-}
-pid = fork();
-if (pid < 0) { log(LogLevel::ERROR, "second fork failed"); return 1; }
-if (pid > 0) {
-_exit(0);
-}
+    // shutdown engine and join worker
+    log(LogLevel::INFO, "Shutting down engine from REPL launcher");
+    engine.shutdown();
+    engine.join();
 
+    if (repl_thread.joinable()) repl_thread.join();
 
-umask(027);
-if (chdir("/") != 0) {
-log(LogLevel::WARN, "chdir to / failed");
-}
-
-
-int fd = open("/dev/null", O_RDWR);
-if (fd >= 0) {
-dup2(fd, STDIN_FILENO);
-dup2(fd, STDOUT_FILENO);
-dup2(fd, STDERR_FILENO);
-if (fd > 2) close(fd);
-}
-
-
-std::string err;
-pid_t mypid = getpid();
-if (!write_pidfile(cfg.pid_file, mypid, err)) {
-log(LogLevel::ERROR, err);
-return 1;
-}
-log(LogLevel::INFO, std::string("daemon running pid=") + std::to_string(mypid));
-
-
-std::signal(SIGTERM, signal_handler);
-std::signal(SIGINT, signal_handler);
-std::signal(SIGHUP, SIG_IGN);
-
-
-while (!g_terminate) {
-sleep(1);
-}
-
-
-log(LogLevel::INFO, "daemon shutting down");
-unlink(cfg.pid_file.c_str());
-return 0;
+    log(LogLevel::INFO, "REPL mode shutdown complete");
+    return 0;
 }

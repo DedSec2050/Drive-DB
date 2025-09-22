@@ -9,6 +9,9 @@ set(SRC_MAIN
     src/main/launcher.cpp
     src/main/repl_launcher.cpp
     src/cli/config.cpp
+    src/main/daemon_launcher.cpp
+    src/engine/engine.cpp
+    src/catalog/catalog.cpp
 )
 
 # Include directories
