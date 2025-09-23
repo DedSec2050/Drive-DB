@@ -1,0 +1,5 @@
+TABLE users
+COL id INT
+COL name TEXT
+COL email TEXT
+END

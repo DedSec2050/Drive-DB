@@ -12,6 +12,9 @@ set(SRC_MAIN
     src/main/daemon_launcher.cpp
     src/engine/engine.cpp
     src/catalog/catalog.cpp
+    src/storage/segment/segment_manager.cpp   
+    src/storage/buffer/buffer_pool.cpp
+    src/execution/executor.cpp 
 )
 
 # Include directories
