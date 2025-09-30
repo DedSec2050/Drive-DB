@@ -43,6 +43,19 @@ Frame* BufferPool::fetch_page(const PageId &pid, bool for_write) {
     return &table_[key];
 }
 
+Frame* BufferPool::fetch_or_allocate_page(const PageId &pid, bool for_write) {
+    try {
+        return fetch_page(pid, for_write);
+    } catch (const std::out_of_range &) {
+        // allocate a fresh page at this page_number
+        PageId newpid = sm_.allocate_page(pid.segment_id);
+        if (newpid.page_number != pid.page_number) {
+            throw std::runtime_error("fetch_or_allocate_page: allocation mismatch");
+        }
+        return fetch_page(newpid, for_write);
+    }
+}
+
 void BufferPool::unpin_page(Frame *frame, bool is_dirty) {
     std::lock_guard<std::mutex> lg(mu_);
     if (is_dirty) frame->dirty = true;

@@ -11,6 +11,7 @@ NC="\033[0m"
 # --- Directories ---
 BUILD_DIR=build/mac
 BIN_DIR=bin/mac
+DATA_DIR=data
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- Ask for approval to start ---
@@ -27,6 +28,8 @@ if [ -d "$BUILD_DIR" ]; then
     if [[ "$clean_approval" =~ ^[Yy]$ ]]; then
         echo -e "${BLUE}Cleaning old build directory...${NC}"
         rm -rf "$BUILD_DIR"
+        echo -e "${BLUE}Cleaning old data directory...${NC}"
+        rm -rf "$DATA_DIR"
     fi
 fi
 
