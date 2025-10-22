@@ -1,0 +1,7 @@
+SQL Command → Executor::handle_select()
+             ↓
+          TableHeap (or Table)
+             ↓
+         BufferPool / SegmentManager
+             ↓
+        seg_<id>.dat (disk file)

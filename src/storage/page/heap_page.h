@@ -1,39 +1,34 @@
 #pragma once
-#include "src/storage/page/page.h"
-#include <cstdint>
-#include <cstring>
+
 #include <vector>
+#include "src/storage/table/tuple.h"
 
 namespace storage {
 
-struct RecordId {
-    PageId pid;
-    uint16_t slot;
-};
-
-struct Slot {
-    uint16_t offset;
-    uint16_t size;
-};
-
 struct HeapPage {
-    PageId id;
-    uint16_t free_start;
-    uint16_t free_end;
-    uint16_t slot_count;
-    Slot slots[64]; // fixed slot directory
-    char data[PAGE_SIZE - 512]; // rest of page
+    // existing fields...
+    uint16_t num_records;
+    char payload[PAGE_PAYLOAD_SIZE - sizeof(uint16_t)];
 
-    HeapPage() {
-        free_start = 0;
-        free_end = sizeof(data);
-        slot_count = 0;
+    std::vector<std::vector<Value>> get_all_records() const {
+        std::vector<std::vector<Value>> records;
+        const char *ptr = payload;
+        for (int i = 0; i < num_records; i++) {
+            uint16_t len;
+            std::memcpy(&len, ptr, sizeof(uint16_t));
+            ptr += sizeof(uint16_t);
+
+            std::vector<Value> row;
+            // Assuming each tuple serialized as [len][bytes...]
+            // You’ll need to deserialize based on your Value format:
+            Value v(std::string(ptr, len));
+            row.push_back(v);
+
+            ptr += len;
+            records.push_back(row);
+        }
+        return records;
     }
-
-    bool insert(const char *buf, uint16_t len, RecordId &rid);
-    bool update(uint16_t slot, const char *buf, uint16_t len);
-    bool erase(uint16_t slot);
-    std::vector<char> read(uint16_t slot) const;
 };
 
 } // namespace storage

@@ -1,6 +1,6 @@
-// src/execution/executor.cpp
 #include "src/execution/executor.h"
-#include "src/utils/logger.h" // optional logger
+#include "src/storage/table/tuple.h"     // tuple include
+#include "src/utils/logger.h"            // optional logger
 #include <algorithm>
 #include <sstream>
 #include <cctype>
@@ -125,25 +125,37 @@ std::string Executor::handle_insert(const std::string &sql) {
                std::to_string(table.columns.size());
     }
 
-    // Serialize row into payload
-    std::vector<uint8_t> payload;
-    for (auto &val : pieces) {
-        std::string v = trim(val);
-        if (v.size() >= 2 && v.front() == '"' && v.back() == '"') {
-            v = v.substr(1, v.size() - 2); // strip quotes
-        }
-        uint32_t l = static_cast<uint32_t>(v.size());
-        payload.insert(payload.end(), reinterpret_cast<uint8_t*>(&l),
-                       reinterpret_cast<uint8_t*>(&l) + 4);
-        payload.insert(payload.end(), v.begin(), v.end());
+    // ----------------------------------------------
+    // Build Tuple from parsed values
+    // ----------------------------------------------
+    std::vector<storage::Value> vals_vec;
+    vals_vec.reserve(pieces.size());
+
+    for (size_t i = 0; i < pieces.size(); i++) {
+        std::string v = trim(pieces[i]);
+        if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
+            v = v.substr(1, v.size() - 2);
+
+        const auto &col = table.columns[i];
+        std::string type_upper = col.type;
+        std::transform(type_upper.begin(), type_upper.end(), type_upper.begin(), ::toupper);
+
+        if (type_upper == "INT" || type_upper == "INTEGER")
+            vals_vec.emplace_back(std::stoi(v));
+        else
+            vals_vec.emplace_back(v);
     }
 
-    // Select segment for this table
+    storage::Tuple tuple(std::move(vals_vec));
+    auto payload = tuple.serialize();
+
+    // ----------------------------------------------
+    // Write to pages
+    // ----------------------------------------------
     uint32_t seg = table_to_segment(tbl);
     uint32_t page_no = 0;
     bool written = false;
 
-    // Try to append to existing pages
     while (true) {
         storage::PageId pid{seg, page_no};
         try {
@@ -151,12 +163,12 @@ std::string Executor::handle_insert(const std::string &sql) {
             uint32_t used = read_page_used_bytes(frame->page);
 
             uint32_t rec_len = static_cast<uint32_t>(payload.size());
-            uint32_t need    = 4 + rec_len; // record header + payload
+            uint32_t need = 4 + rec_len;  // record header + tuple data
             size_t available = sizeof(frame->page.data) - used;
 
             if (need + 4 <= available) {
                 // Append record
-                uint32_t offset = used + 4; // 4 bytes reserved for used_bytes
+                uint32_t offset = used + 4;
                 std::memcpy(frame->page.data + offset, &rec_len, 4);
                 std::memcpy(frame->page.data + offset + 4, payload.data(), rec_len);
 
@@ -167,13 +179,12 @@ std::string Executor::handle_insert(const std::string &sql) {
                 written = true;
                 break;
             } else {
-                // Page full → move to next
                 bp_.unpin_page(frame, false);
                 page_no++;
                 continue;
             }
         } catch (const std::out_of_range &) {
-            // Page doesn't exist → allocate new page
+            // Allocate new page if not exist
             storage::PageId newpid = bp_.allocate_page(seg);
             storage::Frame *frame  = bp_.fetch_page(newpid, true);
 
@@ -187,8 +198,6 @@ std::string Executor::handle_insert(const std::string &sql) {
             bp_.unpin_page(frame, true);
             written = true;
             break;
-        } catch (const std::exception &e) {
-            return "ERR: I/O error during insert: " + std::string(e.what());
         }
     }
 
@@ -231,40 +240,29 @@ std::string Executor::handle_select(const std::string &sql) {
             break;
         }
 
-        uint32_t used   = read_page_used_bytes(frame->page);
+        uint32_t used = read_page_used_bytes(frame->page);
         uint32_t offset = 4;
 
         while (offset + 4 <= used + 4) {
+            const char *ptr = frame->page.data + offset;
             uint32_t rec_len = 0;
-            std::memcpy(&rec_len, frame->page.data + offset, 4);
-            if (rec_len == 0) break;
+            std::memcpy(&rec_len, ptr, 4);
+            ptr += 4;
 
-            offset += 4;
-            if (offset + rec_len > sizeof(frame->page.data)) break;
+            if (rec_len == 0 || offset + 4 + rec_len > sizeof(frame->page.data))
+                break;
 
-            // Deserialize columns
-            size_t po = 0;
-            std::vector<std::string> cols;
-            while (po + 4 <= rec_len) {
-                uint32_t col_len = 0;
-                std::memcpy(&col_len, frame->page.data + offset + po, 4);
-                po += 4;
-                if (po + col_len > rec_len) break;
-
-                std::string val(frame->page.data + offset + po,
-                                frame->page.data + offset + po + col_len);
-                po += col_len;
-                cols.push_back(val);
-            }
+            const char *tuple_ptr = ptr;
+            storage::Tuple tup = storage::Tuple::deserialize(tuple_ptr);
 
             // Print row
-            for (size_t i = 0; i < cols.size() && i < table.columns.size(); ++i) {
-                out << table.columns[i].name << "=" << cols[i];
-                if (i + 1 < cols.size()) out << ", ";
+            for (size_t i = 0; i < tup.values().size() && i < table.columns.size(); ++i) {
+                out << table.columns[i].name << "=" << tup.values()[i].to_string();
+                if (i + 1 < tup.values().size()) out << ", ";
             }
             out << "\n";
 
-            offset += rec_len;
+            offset += 4 + rec_len;
         }
 
         bp_.unpin_page(frame, false);

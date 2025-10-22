@@ -26,12 +26,17 @@ namespace storage {
     private:
         size_t pool_size_;
         SegmentManager &sm_;
-        std::list<PageId> lru_list_;
+
+        // LRU: we store keys (uint64_t) in list and keep iterators for O(1) updates.
+        std::list<uint64_t> lru_list_;
         std::unordered_map<uint64_t, Frame> table_;
+        std::unordered_map<uint64_t, std::list<uint64_t>::iterator> lru_pos_;
+
         std::mutex mu_;
 
-        void evict_if_needed();
+        void evict_if_needed_locked(); // expects mu_ held
         static uint64_t page_key(const PageId &pid);
+        void touch_locked(const PageId &pid); // move to front; expects mu_ held
     };
 
 } // namespace storage

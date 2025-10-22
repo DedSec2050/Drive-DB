@@ -14,7 +14,8 @@ set(SRC_MAIN
     src/catalog/catalog.cpp
     src/storage/segment/segment_manager.cpp   
     src/storage/buffer/buffer_pool.cpp
-    src/execution/executor.cpp 
+    src/execution/executor.cpp
+    src/storage/table/table_heap.cpp
 )
 
 # Include directories
